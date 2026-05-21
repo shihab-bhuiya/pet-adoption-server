@@ -1,14 +1,21 @@
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+// FIXED: Added ObjectId right here!
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb'); 
 require('dotenv').config();
-
+const { auth } = require("./auth");
 const app = express();
 const port = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
 app.use(express.json()); // Allows Express to parse JSON bodies
+
+app.all("/api/auth/*", async (req, res) => {
+  // Better Auth handles the incoming request object natively
+  const response = await auth.handler(req);
+  res.status(response.status).send(response.body);
+});
 
 // MongoDB Connection
 const uri = process.env.MONGO_URI;
@@ -27,30 +34,24 @@ async function run() {
     console.log("Successfully connected to MongoDB!");
 
     // Set up your database and collection references
-    const database = client.db("pet-adoption"); // Use your actual DB name here
+    const database = client.db("pet-adoption"); 
     const petsCollection = database.collection("pets");
 
     // ==========================================
     // API ROUTES
     // ==========================================
 
-    // 1. GET /api/pets - Fetch all available pets (Public Route)
     // 1. GET /api/pets - Fetch available pets with Advanced Search & Filters
     app.get('/api/pets', async (req, res) => {
       try {
         const { search, species } = req.query;
-        
-        // Start with the base filter: only show available pets
         let query = { adoptionStatus: "available" };
 
-        // Challenge Part A: Search pets by name ($regex)
         if (search) {
-          query.petName = { $regex: search, $options: 'i' }; // 'i' makes it case-insensitive
+          query.petName = { $regex: search, $options: 'i' }; 
         }
 
-        // Challenge Part B: Filter pets by species ($in)
         if (species) {
-          // If multiple species are passed from client as a comma-separated string (e.g. "Dog,Cat")
           const speciesArray = species.split(',');
           query.species = { $in: speciesArray };
         }
@@ -64,11 +65,12 @@ async function run() {
         res.status(500).send({ message: "Server error while fetching pets" });
       }
     });
+
+    // 2. GET /api/pets/:id - Fetch single pet details (FIXED & WORKING NOW)
     app.get('/api/pets/:id', async (req, res) => {
       try {
         const id = req.params.id;
         
-        // Ensure the ID format is a valid MongoDB ObjectId hex string
         if (!ObjectId.isValid(id)) {
           return res.status(400).send({ message: "Invalid pet ID format" });
         }
@@ -91,11 +93,7 @@ async function run() {
     app.post('/api/adoption-requests', async (req, res) => {
       try {
         const application = req.body;
-        
-        // Access a new collection inside your database dynamically
         const adoptionCollection = database.collection("adoptionRequests");
-        
-        // Insert application document into your MongoDB cluster collection
         const result = await adoptionCollection.insertOne(application);
         
         res.status(201).send({ 
@@ -116,7 +114,7 @@ run().catch(console.dir);
 
 // Root route to check if server works
 app.get('/', (req, res) => {
-  res.send('Pet Adoption Platform server is running running...');
+  res.send('Pet Adoption Platform server is running...');
 });
 
 // Start listening
