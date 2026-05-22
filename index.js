@@ -1,22 +1,19 @@
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb'); 
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
 const { auth } = require("./auth");
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// ==========================================
-// MIDDLEWARES (Configured for Auth Cookies)
-// ==========================================
 app.use(cors({
-    origin: ["http://localhost:3000", "https://pet-adoption-platform.vercel.app"],
-    credentials: true 
+  origin: ["http://localhost:3000", "https://pet-adoption-platform-8c1l.vercel.app"],
+  credentials: true
 }));
-app.use(express.json()); 
+app.use(express.json());
 
-// FIXED: Native Regular Expression bypasses Express string parsing errors completely
+// Auth Route Handler
 app.all(/^\/api\/auth\/.*/, async (req, res) => {
   try {
     const response = await auth.handler(req);
@@ -27,146 +24,119 @@ app.all(/^\/api\/auth\/.*/, async (req, res) => {
   }
 });
 
-// ==========================================
-// MONGODB DATABASE CONNECTION
-// ==========================================
+// Authentication Middleware Guard
+const requireAuth = async (req, res, next) => {
+  try {
+    const session = await auth.api.getSession({ headers: req.headers });
+    if (!session?.user) {
+      return res.status(401).send({ message: "Unauthorized: session required" });
+    }
+    req.user = session.user;
+    next();
+  } catch (error) {
+    console.error("Session verification error:", error);
+    return res.status(401).send({ message: "Unauthorized: session failed" });
+  }
+};
+
 const uri = process.env.MONGO_URI;
 const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
+  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
 });
 
 async function run() {
   try {
-    // Connect to the Atlas cluster
     await client.connect();
     console.log("Successfully connected to MongoDB!");
 
-    // Set up database and collection references
-    const database = client.db("pet-adoption"); 
+    const database = client.db("pet-adoption");
     const petsCollection = database.collection("pets");
     const adoptionCollection = database.collection("adoptionRequests");
 
-    // ==========================================
-    // API ROUTES
-    // ==========================================
-
-    // 1. GET /api/pets - Fetch available pets with Search & Filters
+    // 1. GET /api/pets - Fetch & Filter Pets
     app.get('/api/pets', async (req, res) => {
       try {
         const { search, species } = req.query;
         let query = { adoptionStatus: "available" };
+        if (search) query.petName = { $regex: search, $options: 'i' };
+        if (species) query.species = { $in: species.split(',') };
 
-        if (search) {
-          query.petName = { $regex: search, $options: 'i' }; 
-        }
-
-        if (species) {
-          const speciesArray = species.split(',');
-          query.species = { $in: speciesArray };
-        }
-
-        const cursor = petsCollection.find(query);
-        const result = await cursor.toArray();
-        
+        const result = await petsCollection.find(query).toArray();
         res.status(200).send(result);
       } catch (error) {
-        console.error("Error fetching filtered pets:", error);
-        res.status(500).send({ message: "Server error while fetching pets" });
+        res.status(500).send({ message: "Error fetching pets" });
       }
     });
 
-    // 2. GET /api/pets/:id - Fetch single pet profile details safely
-   // 2. GET /api/pets/:id - Fetch single pet profile details safely
+    // 2. GET /api/pets/:id - Fetch Single Pet
     app.get('/api/pets/:id', async (req, res) => {
       try {
         const id = req.params.id;
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID format" });
         
-        // 1. Double check validation BEFORE converting to ObjectId
-        if (!id || id.length !== 24 || !ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid pet ID string format format" });
-        }
+        const result = await petsCollection.findOne({ _id: new ObjectId(id) });
+        if (!result) return res.status(404).send({ message: "Pet not found" });
 
-        // 2. Wrap the database lookup query inside its own try-catch
-        let result;
-        try {
-          const query = { _id: new ObjectId(id) };
-          result = await petsCollection.findOne(query);
-        } catch (dbError) {
-          console.error("MongoDB engine lookup failure:", dbError);
-          return res.status(404).send({ message: "Database could not parse ID string" });
-        }
+        const normalized = { ...result, imageUrl: result.imageUrl || result.petImage, petImage: result.petImage || result.imageUrl };
+        res.status(200).send(normalized);
+      } catch (error) {
+        res.status(500).send({ message: "Server error recovering pet profile" });
+      }
+    });
 
-        // 3. If no matching pet is found, return 404 instead of throwing a 500 crash
-        if (!result) {
-          return res.status(404).send({ message: "No animal found matching this ID record" });
-        }
+    // 3. POST /api/pets - Add a Pet (Protected)
+    app.post('/api/pets', requireAuth, async (req, res) => {
+      try {
+        const { petName, species, breed, age, petImage, description } = req.body;
+        const newPet = {
+          petName, species, breed, age, 
+          imageUrl: petImage, petImage, 
+          description, adoptionStatus: "available",
+          postedBy: req.user.email, createdAt: new Date()
+        };
+        const result = await petsCollection.insertOne(newPet);
+        res.status(201).send({ message: "Pet added successfully", insertedId: result.insertedId });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to add pet entry" });
+      }
+    });
 
-        // 4. Normalize images safely
-        const normalizedResult = {
-          ...result,
-          imageUrl: result.imageUrl || result.petImage,
-          petImage: result.petImage || result.imageUrl
+    // 4. POST /api/adoption-requests - Create Application (Protected)
+    app.post('/api/adoption-requests', requireAuth, async (req, res) => {
+      try {
+        const { petId, petName, petImage, userPhone, userAddress } = req.body;
+        const userEmail = req.user.email;
+
+        const existing = await adoptionCollection.findOne({ petId, userEmail });
+        if (existing) return res.status(409).send({ message: "Application already submitted for this pet" });
+
+        const application = {
+          petId, petName, petImage, userEmail, userName: req.user.name,
+          userPhone, userAddress, status: 'pending', submittedAt: new Date()
         };
 
-        return res.status(200).send(normalizedResult);
-
-      } catch (error) {
-        console.error("Error finding pet profile details:", error);
-        return res.status(500).send({ message: "Server error recovering pet profile details" });
-      }
-    });
-
-    // 3. POST /api/adoption-requests - Save a new adoption form submission
-    app.post('/api/adoption-requests', async (req, res) => {
-      try {
-        const application = req.body;
         const result = await adoptionCollection.insertOne(application);
-        
-        res.status(201).send({ 
-          message: "Application logged successfully", 
-          insertedId: result.insertedId 
-        });
+        res.status(201).send({ message: "Application submitted", insertedId: result.insertedId });
       } catch (error) {
-        console.error("Error logging adoption application:", error);
-        res.status(500).send({ message: "Server error while saving application form" });
+        res.status(500).send({ message: "Server error saving application" });
       }
     });
 
-    // 4. GET /api/my-adoption-requests - Fetch applications belonging to logged-in user
-    app.get('/api/my-adoption-requests', async (req, res) => {
+    // 5. GET /api/my-adoption-requests - User's Applications (Protected)
+    app.get('/api/my-adoption-requests', requireAuth, async (req, res) => {
       try {
-        const userEmail = req.query.email;
-        
-        if (!userEmail) {
-          return res.status(400).send({ message: "Email query parameter is required" });
-        }
-        
-        const query = { userEmail: userEmail };
-        const result = await adoptionCollection.find(query).toArray();
-        
+        const result = await adoptionCollection.find({ userEmail: req.user.email }).sort({ submittedAt: -1 }).toArray();
         res.status(200).send(result);
       } catch (error) {
-        console.error("Error retrieving user adoption requests:", error);
-        res.status(500).send({ message: "Server error recovering applications history" });
+        res.status(500).send({ message: "Error recovering application history" });
       }
     });
 
   } catch (error) {
-    console.error("Database tracking sequence initialization failure:", error);
+    console.error("Initialization failure:", error);
   }
 }
 run().catch(console.dir);
 
-// Root heartbeat route
-app.get('/', (req, res) => {
-  res.send('Pet Adoption Platform server is running...');
-});
-
-// Start listening
-app.listen(port, () => {
-  console.log(`Server is listening on port ${port}`);
-});
+app.get('/', (req, res) => res.send('Pet Adoption Platform server running...'));
+app.listen(port, () => console.log(`Server listening on port ${port}`));
