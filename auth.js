@@ -2,7 +2,7 @@ const { betterAuth } = require("better-auth");
 require('dotenv').config();
 
 if (!process.env.MONGO_URI) {
-  throw new Error("Missing MONGO_URI inside environment variables");
+  throw new Error("Missing MONGO_URI string value inside environment variables");
 }
 
 const auth = betterAuth({
