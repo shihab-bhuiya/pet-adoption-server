@@ -42,8 +42,9 @@ const requireAuth = async (req, res, next) => {
 };
 
 const uri = process.env.MONGO_URI;
+// FIXED: Removed "strict: true" to prevent regex $options queries from crashing the database server context
 const client = new MongoClient(uri, {
-  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
+  serverApi: { version: ServerApiVersion.v1, deprecationErrors: true }
 });
 
 async function run() {
@@ -70,12 +71,11 @@ async function run() {
       }
     });
 
-    // 1. GET /api/pets (FIXED: Fallback query if status field doesn't exist yet)
+    // 1. GET /api/pets (Matches available items & processes filters cleanly)
     app.get('/api/pets', async (req, res) => {
       try {
         const { search, species } = req.query;
         
-        // Match both explicit available pets AND legacy items without a status field
         let query = { 
           adoptionStatus: { $ne: "adopted" } 
         };
@@ -167,7 +167,7 @@ async function run() {
       }
     });
 
-    // 6. POST /api/adoption-requests (Private Client Adoption Workflow)
+    // 6. POST /api/adoption-requests (Private Client Adoption Workflow + Guardrails)
     app.post('/api/adoption-requests', requireAuth, async (req, res) => {
       try {
         const { petId, pickupDate, message } = req.body;
@@ -251,7 +251,7 @@ async function run() {
       }
     });
 
-    // 11. PATCH /api/adoption-requests/:id/status (Private Status Application Management Core)
+    // 11. PATCH /api/adoption-requests/:id/status (Atomic Double-Adoption Switcher Guard)
     app.patch('/api/adoption-requests/:id/status', requireAuth, async (req, res) => {
       try {
         const { status } = req.body; 
