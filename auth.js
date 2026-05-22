@@ -1,21 +1,20 @@
-const { betterAuth } = require("better-auth");
-require('dotenv').config();
+import { betterAuth } from "better-auth";
+import { mongodbAdapter } from "better-auth/adapters/mongodb"; // <-- Built-in subpath import!
+import { MongoClient } from "mongodb";
 
-if (!process.env.MONGO_URI) {
-  throw new Error("Missing MONGO_URI string value inside environment variables");
-}
+// Initialize your MongoDB client connection
+const client = new MongoClient(process.env.MONGO_URI || process.env.MONGODB_URI);
+const db = client.db(); // Connects to the database specified in your connection string
 
-const auth = betterAuth({
-  database: {
-    provider: "mongodb",
-    mongodb: {
-      url: process.env.MONGO_URI
-    }
-  },
-  emailAndPassword: {
-    enabled: true 
-  },
-  secret: process.env.BETTER_AUTH_SECRET
+export const auth = betterAuth({
+    // Pass the built-in mongodbAdapter function into the database configuration
+    database: mongodbAdapter(db),
+    
+    emailAndPassword: {
+        enabled: true
+    },
+    trustedOrigins: [
+        "http://localhost:3000",
+        "https://pet-adoption-platform-8c1l.vercel.app"
+    ]
 });
-
-module.exports = { auth };
